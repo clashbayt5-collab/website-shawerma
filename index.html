@@ -377,6 +377,8 @@ textarea.input { resize: vertical; min-height: 92px; }
 .pickup-note { padding: 14px 16px; border: 1px solid var(--gold-faint); color: var(--text); font-size: 15px; }
 .pickup-note b { color: var(--gold); font-weight: 500; }
 .demo { font-size: 13px; color: var(--muted); margin: 0; text-align: center; }
+.hp { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; }
+.order-form .btn:disabled { opacity: .6; cursor: progress; }
 .cart { border: 1px solid var(--gold-dim); padding: 28px; position: sticky; top: calc(env(safe-area-inset-top, 0px) + 84px); background: var(--panel-2); }
 .cart h3 { font-size: 30px; text-transform: uppercase; letter-spacing: .06em; }
 .cart ul { list-style: none; margin: 18px 0 0; padding: 0; display: grid; }
@@ -738,9 +740,10 @@ footer .brand svg { width: 44px; height: 44px; flex: none; }
             </div>
             <label class="field" for="o-note"><span>Комментарий</span><textarea class="input" id="o-note" placeholder="Например: без лука, позвонить за 10 минут"></textarea></label>
             <label class="check" for="o-agree"><input type="checkbox" id="o-agree"><span>Я согласен на обработку персональных данных</span></label>
+            <input class="hp" name="website" tabindex="-1" autocomplete="off" aria-hidden="true">
             <p class="err" id="o-err" hidden></p>
-            <button class="btn" type="submit">Отправить заявку <span class="arr">→</span></button>
-            <p class="demo">Демо-версия: заявка пока никуда не отправляется.</p>
+            <button class="btn" type="submit" id="o-send">Отправить заявку <span class="arr">→</span></button>
+            <p class="demo" id="o-demo">Демо-версия: заявка пока никуда не отправляется.</p>
           </form>
         </div>
         <aside class="cart" aria-live="polite">
@@ -1017,7 +1020,11 @@ footer .brand svg { width: 44px; height: 44px; flex: none; }
   }
 
   // ---------- Заявка ----------
+  // Обработчик заявок: Google Apps Script (server/google-apps-script.gs) или order.php на хостинге.
+  // Пусто — заявка никуда не уходит (демо).
+  var ORDER_URL = 'https://script.google.com/macros/s/AKfycbwlOY9L32K6f54preGUDeFaT7NyHE58KF87O4ynnrzsqwTcyO9CMV5MBHJWi5gAhdH8/exec';
   var form = $('order-form');
+  $('o-demo').hidden = !!ORDER_URL;
   form.addEventListener('change', function (e) {
     if (e.target.id === 'o-agree') e.target.closest('.check').classList.remove('bad');
     if (e.target.name !== 'way') return;
@@ -1045,19 +1052,39 @@ footer .brand svg { width: 44px; height: 44px; flex: none; }
     }
     $('o-err').hidden = true;
     var total = cart.reduce(function (s, it) { return s + it.price * it.qty; }, 0);
-    var time = $('o-time').value;
-    $('done-num').textContent = 'Заказ № ' + String(Date.now()).slice(-4);
-    $('done-lead').textContent = 'Спасибо, ' + name + '! Мы позвоним на номер ' + phone + ', чтобы подтвердить заказ.';
-    $('done-list').innerHTML = cart.map(function (it) {
-      return '<li><span>' + esc(it.name) + '<small>' + esc(it.note) + ' × ' + it.qty + '</small></span><span class="sum">' + rub(it.price * it.qty) + '</span></li>';
-    }).join('');
-    $('done-total').textContent = rub(total);
-    $('done-meta').textContent = (pickup ? 'Самовывоз: ул. Лауреатов, 35' : 'Доставка: ' + addr) + (time ? ' · к ' + time : '') + ' · ' + form.pay.value;
-    $('done').hidden = false; $('done').scrollTop = 0;
-    document.body.style.overflow = 'hidden';
-    form.reset(); $('addr-field').hidden = false; $('pickup-note').hidden = true;
-    cart = []; renderCart();
-    setTimeout(function () { $('done-home').focus({ preventScroll: true }); }, 60);
+    var time = $('o-time').value, num = String(Date.now()).slice(-4);
+    if (!ORDER_URL) { showDone(); return; }
+    var order = {
+      num: num, name: name, phone: phone, way: pickup ? 'pickup' : 'delivery', addr: pickup ? '' : addr,
+      time: time, pay: form.pay.value, note: $('o-note').value.trim(), website: form.website.value,
+      items: cart.map(function (it) { return { name: it.name, note: it.note, qty: it.qty, price: it.price }; })
+    };
+    var send = $('o-send'), label = send.innerHTML;
+    send.disabled = true; send.textContent = 'Отправляем…';
+    // text/plain, чтобы браузер не делал лишний предварительный запрос к хостингу
+    fetch(ORDER_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=UTF-8' }, body: JSON.stringify(order) })
+      .then(function (r) { return r.json(); })
+      .then(function (d) { if (!d.ok) throw new Error(); showDone(); })
+      .catch(function () {
+        $('o-err').textContent = 'Не получилось отправить заявку. Попробуйте ещё раз или позвоните нам: 8 (913) 160-75-92.';
+        $('o-err').hidden = false;
+      })
+      .then(function () { send.disabled = false; send.innerHTML = label; });
+
+    function showDone() {
+      $('done-num').textContent = 'Заказ № ' + num;
+      $('done-lead').textContent = 'Спасибо, ' + name + '! Мы позвоним на номер ' + phone + ', чтобы подтвердить заказ.';
+      $('done-list').innerHTML = cart.map(function (it) {
+        return '<li><span>' + esc(it.name) + '<small>' + esc(it.note) + ' × ' + it.qty + '</small></span><span class="sum">' + rub(it.price * it.qty) + '</span></li>';
+      }).join('');
+      $('done-total').textContent = rub(total);
+      $('done-meta').textContent = (pickup ? 'Самовывоз: ул. Лауреатов, 35' : 'Доставка: ' + addr) + (time ? ' · к ' + time : '') + ' · ' + form.pay.value;
+      $('done').hidden = false; $('done').scrollTop = 0;
+      document.body.style.overflow = 'hidden';
+      form.reset(); $('addr-field').hidden = false; $('pickup-note').hidden = true;
+      cart = []; renderCart();
+      setTimeout(function () { $('done-home').focus({ preventScroll: true }); }, 60);
+    }
   });
 
   function closeDone() { $('done').hidden = true; document.body.style.overflow = ''; }
